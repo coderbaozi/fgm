@@ -2,163 +2,204 @@
 
 set -e
 
-OWNER="coderbaozi"
-REPO="fgm"
-BIN_NAME="fgm"
-INSTALL_DIR="/usr/local/bin"
-
-# 颜色设置
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m'
-
-log_info() { echo -e "${GREEN}[INFO] $1${NC}"; }
-log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
-log_error() { echo -e "${RED}[ERROR] $1${NC}"; }
-
-# 1. 检测系统架构
+RELEASE="latest"
 OS="$(uname -s)"
-ARCH="$(uname -m)"
 
-case $OS in
-    Linux)  OS_KEY="linux" ;;
-    Darwin) OS_KEY="darwin" ;; # 稍后我们会同时匹配 darwin, mac, osx
-    *) log_error "不支持的操作系统: $OS"; exit 1 ;;
+case "${OS}" in
+   MINGW* | Win*) OS="Windows" ;;
 esac
 
-case $ARCH in
-    x86_64|amd64) ARCH_KEY="amd64" ;;
-    aarch64|arm64) ARCH_KEY="arm64" ;;
-    *) log_error "不支持的架构: $ARCH"; exit 1 ;;
-esac
-
-log_info "检测到系统: $OS ($ARCH)"
-
-# 2. 获取下载链接 (HTML 抓取模式，绕过 API 限制)
-log_info "正在获取最新版本 (通过 HTML 页面)..."
-
-# 获取 Latest Release 的页面 HTML
-# 使用 -L 跟随重定向，直接获取最新版本的页面内容
-HTML_CONTENT=$(curl -sL "https://github.com/$OWNER/$REPO/releases/latest")
-
-if [ -z "$HTML_CONTENT" ]; then
-    log_error "无法连接到 GitHub 网页，请检查网络。"
-    exit 1
+if [ -d "$HOME/.fgm" ]; then
+  INSTALL_DIR="$HOME/.fgm"
+elif [ -n "$XDG_DATA_HOME" ]; then
+  INSTALL_DIR="$XDG_DATA_HOME/fgm"
+elif [ "$OS" = "Darwin" ]; then
+  INSTALL_DIR="$HOME/Library/Application Support/fgm"
+else
+  INSTALL_DIR="$HOME/.local/share/fgm"
 fi
 
-# 3. 提取下载链接
-# 使用 grep 和 sed 从 HTML 中提取所有 href 包含 /download/ 的链接
-# 格式通常是: /coderbaozi/fgm/releases/download/v1.0.0/filename.tar.gz
-URL_LIST=$(echo "$HTML_CONTENT" | grep -oE 'href="[^"]*releases/download/[^"]*"' | sed 's/href="//;s/"//')
+# Parse Flags
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    key="$1"
 
-if [ -z "$URL_LIST" ]; then
-    # 备用方案：如果 latest 页面抓取失败，尝试抓取 expanded_assets (GitHub 新版页面结构)
-    # 先获取 tag 名称
-    TAG_NAME=$(echo "$HTML_CONTENT" | grep -oE 'releases/tag/[^"]+' | head -n 1 | awk -F/ '{print $NF}')
-    if [ -n "$TAG_NAME" ]; then
-        HTML_CONTENT=$(curl -sL "https://github.com/$OWNER/$REPO/releases/expanded_assets/$TAG_NAME")
-        URL_LIST=$(echo "$HTML_CONTENT" | grep -oE 'href="[^"]*releases/download/[^"]*"' | sed 's/href="//;s/"//')
-    fi
-fi
-
-if [ -z "$URL_LIST" ]; then
-    log_error "未能从页面解析出下载链接。"
-    exit 1
-fi
-
-# 4. 匹配最佳文件
-# 函数：根据关键字筛选链接
-filter_url() {
-    local keyword1=$1
-    local keyword2=$2
-    # 排除 .sha256, .md5, .txt 等非二进制文件
-    echo "$URL_LIST" | grep -i "$keyword1" | grep -i "$keyword2" | grep -vE '\.(txt|md|sha256|sha|sig|pem)$' | head -n 1
+    case $key in
+    -d | --install-dir)
+      INSTALL_DIR="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -s | --skip-shell)
+      SKIP_SHELL="true"
+      shift # past argument
+      ;;
+    -r | --release)
+      RELEASE="$2"
+      shift # past release argument
+      shift # past release value
+      ;;
+    *)
+      echo "Unrecognized argument $key"
+      exit 1
+      ;;
+    esac
+  done
 }
 
-# 尝试匹配: OS + Arch
-MATCH_PATH=$(filter_url "$OS_KEY" "$ARCH_KEY")
-
-# 特殊处理：如果 macOS 没找到 "darwin"，尝试找 "mac"
-if [ -z "$MATCH_PATH" ] && [ "$OS_KEY" == "darwin" ]; then
-    MATCH_PATH=$(filter_url "mac" "$ARCH_KEY")
-fi
-
-# 特殊处理：如果 macOS arm64 没找到，尝试找 amd64 (Rosetta)
-if [ -z "$MATCH_PATH" ] && [ "$OS_KEY" == "darwin" ] && [ "$ARCH_KEY" == "arm64" ]; then
-    log_warn "未找到原生 arm64 包，尝试下载 amd64 包..."
-    MATCH_PATH=$(filter_url "$OS_KEY" "amd64")
-    # 如果 darwin+amd64 也没找到，试 mac+amd64
-    if [ -z "$MATCH_PATH" ]; then
-        MATCH_PATH=$(filter_url "mac" "amd64")
-    fi
-fi
-
-if [ -z "$MATCH_PATH" ]; then
-    log_error "未找到匹配当前系统的文件。"
-    echo "------------------------------------------------"
-    echo "发现的所有文件列表："
-    echo "$URL_LIST" | awk -F/ '{print $NF}'
-    echo "------------------------------------------------"
+set_filename() {
+  if [ "$OS" = "Linux" ]; then
+    # Based on https://stackoverflow.com/a/45125525
+    case "$(uname -m)" in
+      arm | armv7*)
+        FILENAME="fgm-arm32"
+        ;;
+      aarch* | armv8*)
+        FILENAME="fgm-arm64"
+        ;;
+      *)
+        FILENAME="fgm-linux"
+    esac
+  elif [ "$OS" = "Darwin" ]; then
+    FILENAME="fgm-macos"
+    echo "Downloading the latest fgm binary from GitHub..."
+  elif [ "$OS" = "Windows" ] ; then
+    FILENAME="fgm-windows"
+    echo "Downloading the latest fgm binary from GitHub..."
+  else
+    echo "OS $OS is not supported."
+    echo "If you think that's a bug - please file an issue to https://github.com/coderbaozi/fgm/issues"
     exit 1
-fi
+  fi
+}
 
-# 拼接完整 URL
-DOWNLOAD_URL="https://github.com$MATCH_PATH"
-FILENAME=$(basename "$DOWNLOAD_URL")
+download_fgm() {
+  if [ "$RELEASE" = "latest" ]; then
+    URL="https://github.com/coderbaozi/fgm/releases/latest/download/$FILENAME.zip"
+  else
+    URL="https://github.com/coderbaozi/fgm/releases/download/$RELEASE/$FILENAME.zip"
+  fi
 
-log_info "找到文件: $FILENAME"
+  DOWNLOAD_DIR=$(mktemp -d)
 
-# 5. 下载并安装
-TMP_DIR=$(mktemp -d)
-trap "rm -rf $TMP_DIR" EXIT
+  echo "Downloading $URL..."
 
-cd "$TMP_DIR"
-log_info "开始下载..."
-# 增加重试机制
-curl -L --retry 3 -o "$FILENAME" "$DOWNLOAD_URL"
+  mkdir -p "$INSTALL_DIR" &>/dev/null
 
-log_info "解压中..."
-if [[ "$FILENAME" == *.tar.gz ]] || [[ "$FILENAME" == *.tgz ]]; then
-    tar -xzf "$FILENAME"
-elif [[ "$FILENAME" == *.zip ]]; then
-    unzip -q "$FILENAME"
-else
-    chmod +x "$FILENAME"
-    mv "$FILENAME" "$BIN_NAME" 2>/dev/null || true
-fi
-
-# 寻找二进制文件
-if [ ! -f "$BIN_NAME" ]; then
-    # 排除 html, txt, md, hidden files, 自身压缩包
-    FOUND_BIN=$(find . -type f -not -name "*.*" -not -name "LICENSE" -not -name "README" | head -n 1)
-    if [ -n "$FOUND_BIN" ]; then
-        mv "$FOUND_BIN" "$BIN_NAME"
-    fi
-fi
-
-if [ ! -f "$BIN_NAME" ]; then
-    # 再次尝试模糊匹配
-    FOUND_BIN=$(find . -type f -name "*$BIN_NAME*" -not -name "*.gz" -not -name "*.zip" | head -n 1)
-    if [ -n "$FOUND_BIN" ]; then
-        mv "$FOUND_BIN" "$BIN_NAME"
-    fi
-fi
-
-if [ ! -f "$BIN_NAME" ]; then
-    log_error "解压后未找到二进制文件。"
-    ls -R
+  if ! curl --progress-bar --fail -L "$URL" -o "$DOWNLOAD_DIR/$FILENAME.zip"; then
+    echo "Download failed.  Check that the release/filename are correct."
     exit 1
+  fi
+
+  unzip -q "$DOWNLOAD_DIR/$FILENAME.zip" -d "$DOWNLOAD_DIR"
+
+  if [ -f "$DOWNLOAD_DIR/fgm" ]; then
+    mv "$DOWNLOAD_DIR/fgm" "$INSTALL_DIR/fgm"
+  else
+    mv "$DOWNLOAD_DIR/$FILENAME/fgm" "$INSTALL_DIR/fgm"
+  fi
+
+  chmod u+x "$INSTALL_DIR/fgm"
+}
+
+check_dependencies() {
+  echo "Checking dependencies for the installation script..."
+
+  echo -n "Checking availability of curl... "
+  if hash curl 2>/dev/null; then
+    echo "OK!"
+  else
+    echo "Missing!"
+    SHOULD_EXIT="true"
+  fi
+
+  echo -n "Checking availability of unzip... "
+  if hash unzip 2>/dev/null; then
+    echo "OK!"
+  else
+    echo "Missing!"
+    SHOULD_EXIT="true"
+  fi
+
+  if [ "$SHOULD_EXIT" = "true" ]; then
+    echo "Not installing fgm due to missing dependencies."
+    exit 1
+  fi
+}
+
+ensure_containing_dir_exists() {
+  local CONTAINING_DIR
+  CONTAINING_DIR="$(dirname "$1")"
+  if [ ! -d "$CONTAINING_DIR" ]; then
+    echo " >> Creating directory $CONTAINING_DIR"
+    mkdir -p "$CONTAINING_DIR"
+  fi
+}
+
+setup_shell() {
+  CURRENT_SHELL="$(basename "$SHELL")"
+
+  if [ "$CURRENT_SHELL" = "zsh" ]; then
+    CONF_FILE=${ZDOTDIR:-$HOME}/.zshrc
+    ensure_containing_dir_exists "$CONF_FILE"
+    echo "Installing for Zsh. Appending the following to $CONF_FILE:"
+    {
+      echo ''
+      echo '# fgm'
+      echo 'fgm_PATH="'"$INSTALL_DIR"'"'
+      echo 'if [ -d "$fgm_PATH" ]; then'
+      echo '  export PATH="$fgm_PATH:$PATH"'
+      echo '  eval "`fgm env`"'
+      echo 'fi'
+    } | tee -a "$CONF_FILE"
+
+  elif [ "$CURRENT_SHELL" = "fish" ]; then
+    CONF_FILE=$HOME/.config/fish/conf.d/fgm.fish
+    ensure_containing_dir_exists "$CONF_FILE"
+    echo "Installing for Fish. Appending the following to $CONF_FILE:"
+    {
+      echo ''
+      echo '# fgm'
+      echo 'set fgm_PATH "'"$INSTALL_DIR"'"'
+      echo 'if [ -d "$fgm_PATH" ]'
+      echo '  set PATH "$fgm_PATH" $PATH'
+      echo '  fgm env | source'
+      echo 'end'
+    } | tee -a "$CONF_FILE"
+
+  elif [ "$CURRENT_SHELL" = "bash" ]; then
+    if [ "$OS" = "Darwin" ]; then
+      CONF_FILE=$HOME/.profile
+    else
+      CONF_FILE=$HOME/.bashrc
+    fi
+    ensure_containing_dir_exists "$CONF_FILE"
+    echo "Installing for Bash. Appending the following to $CONF_FILE:"
+    {
+      echo ''
+      echo '# fgm'
+      echo 'fgm_PATH="'"$INSTALL_DIR"'"'
+      echo 'if [ -d "$fgm_PATH" ]; then'
+      echo '  export PATH="$fgm_PATH:$PATH"'
+      echo '  eval "`fgm env`"'
+      echo 'fi'
+    } | tee -a "$CONF_FILE"
+
+  else
+    echo "Could not infer shell type. Please set up manually."
+    exit 1
+  fi
+
+  echo ""
+  echo "In order to apply the changes, open a new terminal or run the following command:"
+  echo ""
+  echo "  source $CONF_FILE"
+}
+
+parse_args "$@"
+set_filename
+check_dependencies
+download_fgm
+if [ "$SKIP_SHELL" != "true" ]; then
+  setup_shell
 fi
-
-log_info "安装到 $INSTALL_DIR..."
-if [ -w "$INSTALL_DIR" ]; then
-    mv "$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
-else
-    sudo mv "$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
-fi
-
-sudo chmod +x "$INSTALL_DIR/$BIN_NAME"
-
-log_info "安装成功！"
-"$BIN_NAME" --version || echo "完成"

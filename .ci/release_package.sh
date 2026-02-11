@@ -8,8 +8,8 @@ Usage:
   scripts/release_package.sh <target_triple> <asset_name> [bin_name] [outdir]
 
 Examples:
-  scripts/release_package.sh x86_64-unknown-linux-gnu gnm-linux.zip
-  scripts/release_package.sh x86_64-apple-darwin gnm-macos.zip fgm dist
+  scripts/release_package.sh x86_64-unknown-linux-gnu fgm-linux.zip
+  scripts/release_package.sh x86_64-apple-darwin fgm-macos.zip fgm dist
 EOF
 }
 
