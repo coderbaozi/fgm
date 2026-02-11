@@ -69,12 +69,25 @@ jobs:
           bin="fgm"
           outdir="dist"
 
+          # 产物命名对齐 scripts/install.sh 的 target 识别规则：<arch>-<os>
+          # - arch: x86_64 / aarch64
+          # - os: apple-darwin / linux
+          arch_key="${target%%-*}"
+          if [[ "${target}" == *"apple-darwin"* ]]; then
+            os_key="apple-darwin"
+          elif [[ "${target}" == *"linux"* ]]; then
+            os_key="linux"
+          else
+            echo "unsupported target for packaging: ${target}" 1>&2
+            exit 1
+          fi
+
           mkdir -p "${outdir}"
           tmp="$(mktemp -d)"
           cp "target/${target}/release/${bin}" "${tmp}/${bin}"
           chmod +x "${tmp}/${bin}"
 
-          archive="${bin}-${version}-${target}.tar.gz"
+          archive="${bin}-${version}-${arch_key}-${os_key}.tar.gz"
           tar -C "${tmp}" -czf "${outdir}/${archive}" "${bin}"
           rm -rf "${tmp}"
 
@@ -88,4 +101,3 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: |
             dist/*
-

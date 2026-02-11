@@ -22,6 +22,15 @@ cargo build --release
 ./target/release/fgm --help
 ```
 
+## Install via Release
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/coderbaozi/fgm/main/scripts/install.sh | sh
+```
+
+Optional environment variables:
+- `FGM_BIN_DIR`: default `~/.local/bin`
+
 ## Quick start
 
 1) Install and switch to a version:
