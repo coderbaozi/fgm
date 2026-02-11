@@ -25,13 +25,17 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-latest
             target: x86_64-apple-darwin
+            asset: gnm-macos.zip
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            asset: gnm-linux.zip
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
+            asset: gnm-arm64.zip
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            asset: gnm-arm32.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -64,40 +68,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          version="${GITHUB_REF_NAME}"
-          target="${{ matrix.target }}"
-          bin="fgm"
-          outdir="dist"
-
-          # 产物命名对齐 scripts/install.sh 的 target 识别规则：<arch>-<os>
-          # - arch: x86_64 / aarch64
-          # - os: apple-darwin / linux
-          arch_key="${target%%-*}"
-          if [[ "${target}" == *"apple-darwin"* ]]; then
-            os_key="apple-darwin"
-          elif [[ "${target}" == *"linux"* ]]; then
-            os_key="linux"
-          else
-            echo "unsupported target for packaging: ${target}" 1>&2
-            exit 1
-          fi
-
-          mkdir -p "${outdir}"
-          tmp="$(mktemp -d)"
-          cp "target/${target}/release/${bin}" "${tmp}/${bin}"
-          chmod +x "${tmp}/${bin}"
-
-          archive="${bin}-${version}-${arch_key}-${os_key}.tar.gz"
-          tar -C "${tmp}" -czf "${outdir}/${archive}" "${bin}"
-          rm -rf "${tmp}"
-
-          file="${outdir}/${archive}"
-          sha="$(shasum -a 256 "${file}" | awk '{print $1}')"
-          printf "%s  %s\n" "${sha}" "${archive}" > "${file}.sha256"
+          bash .ci/release_package.sh "${{ matrix.target }}" "${{ matrix.asset }}" fgm dist
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           files: |
-            dist/*
+            dist/*.zip

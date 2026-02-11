@@ -1,200 +1,164 @@
-#!/usr/bin/env sh
-set -eu
+#!/bin/bash
 
-# fgm installer (macOS/Linux)
-#
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/<OWNER>/<REPO>/main/scripts/install.sh | sh
-#
-# Optional environment variables:
-#   FGM_REPO=owner/repo        # Default: coderbaozi/fgm (change to your repo)
-#   FGM_VERSION=v0.1.0         # Default: latest
-#   FGM_BIN_DIR=$HOME/.local/bin
+set -e
 
-REPO="${FGM_REPO:-coderbaozi/fgm}"
-VERSION="${FGM_VERSION:-}"
-BIN_DIR="${FGM_BIN_DIR:-${HOME}/.local/bin}"
+OWNER="coderbaozi"
+REPO="fgm"
+BIN_NAME="fgm"
+INSTALL_DIR="/usr/local/bin"
 
+# 颜色设置
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-RED='\033[0;31m'
 NC='\033[0m'
 
-die() {
-  # shellcheck disable=SC2059
-  printf "%b[fgm] %s%b\n" "$RED" "$*" "$NC" 1>&2
-  exit 1
+log_info() { echo -e "${GREEN}[INFO] $1${NC}"; }
+log_warn() { echo -e "${YELLOW}[WARN] $1${NC}"; }
+log_error() { echo -e "${RED}[ERROR] $1${NC}"; }
+
+# 1. 检测系统架构
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+case $OS in
+    Linux)  OS_KEY="linux" ;;
+    Darwin) OS_KEY="darwin" ;; # 稍后我们会同时匹配 darwin, mac, osx
+    *) log_error "不支持的操作系统: $OS"; exit 1 ;;
+esac
+
+case $ARCH in
+    x86_64|amd64) ARCH_KEY="amd64" ;;
+    aarch64|arm64) ARCH_KEY="arm64" ;;
+    *) log_error "不支持的架构: $ARCH"; exit 1 ;;
+esac
+
+log_info "检测到系统: $OS ($ARCH)"
+
+# 2. 获取下载链接 (HTML 抓取模式，绕过 API 限制)
+log_info "正在获取最新版本 (通过 HTML 页面)..."
+
+# 获取 Latest Release 的页面 HTML
+# 使用 -L 跟随重定向，直接获取最新版本的页面内容
+HTML_CONTENT=$(curl -sL "https://github.com/$OWNER/$REPO/releases/latest")
+
+if [ -z "$HTML_CONTENT" ]; then
+    log_error "无法连接到 GitHub 网页，请检查网络。"
+    exit 1
+fi
+
+# 3. 提取下载链接
+# 使用 grep 和 sed 从 HTML 中提取所有 href 包含 /download/ 的链接
+# 格式通常是: /coderbaozi/fgm/releases/download/v1.0.0/filename.tar.gz
+URL_LIST=$(echo "$HTML_CONTENT" | grep -oE 'href="[^"]*releases/download/[^"]*"' | sed 's/href="//;s/"//')
+
+if [ -z "$URL_LIST" ]; then
+    # 备用方案：如果 latest 页面抓取失败，尝试抓取 expanded_assets (GitHub 新版页面结构)
+    # 先获取 tag 名称
+    TAG_NAME=$(echo "$HTML_CONTENT" | grep -oE 'releases/tag/[^"]+' | head -n 1 | awk -F/ '{print $NF}')
+    if [ -n "$TAG_NAME" ]; then
+        HTML_CONTENT=$(curl -sL "https://github.com/$OWNER/$REPO/releases/expanded_assets/$TAG_NAME")
+        URL_LIST=$(echo "$HTML_CONTENT" | grep -oE 'href="[^"]*releases/download/[^"]*"' | sed 's/href="//;s/"//')
+    fi
+fi
+
+if [ -z "$URL_LIST" ]; then
+    log_error "未能从页面解析出下载链接。"
+    exit 1
+fi
+
+# 4. 匹配最佳文件
+# 函数：根据关键字筛选链接
+filter_url() {
+    local keyword1=$1
+    local keyword2=$2
+    # 排除 .sha256, .md5, .txt 等非二进制文件
+    echo "$URL_LIST" | grep -i "$keyword1" | grep -i "$keyword2" | grep -vE '\.(txt|md|sha256|sha|sig|pem)$' | head -n 1
 }
 
-info() {
-  # shellcheck disable=SC2059
-  printf "%b[fgm] %s%b\n" "$GREEN" "$*" "$NC"
-}
+# 尝试匹配: OS + Arch
+MATCH_PATH=$(filter_url "$OS_KEY" "$ARCH_KEY")
 
-warn() {
-  # shellcheck disable=SC2059
-  printf "%b[fgm] %s%b\n" "$YELLOW" "$*" "$NC" 1>&2
-}
+# 特殊处理：如果 macOS 没找到 "darwin"，尝试找 "mac"
+if [ -z "$MATCH_PATH" ] && [ "$OS_KEY" == "darwin" ]; then
+    MATCH_PATH=$(filter_url "mac" "$ARCH_KEY")
+fi
 
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"
-}
+# 特殊处理：如果 macOS arm64 没找到，尝试找 amd64 (Rosetta)
+if [ -z "$MATCH_PATH" ] && [ "$OS_KEY" == "darwin" ] && [ "$ARCH_KEY" == "arm64" ]; then
+    log_warn "未找到原生 arm64 包，尝试下载 amd64 包..."
+    MATCH_PATH=$(filter_url "$OS_KEY" "amd64")
+    # 如果 darwin+amd64 也没找到，试 mac+amd64
+    if [ -z "$MATCH_PATH" ]; then
+        MATCH_PATH=$(filter_url "mac" "amd64")
+    fi
+fi
 
-have_cmd() {
-  command -v "$1" >/dev/null 2>&1
-}
+if [ -z "$MATCH_PATH" ]; then
+    log_error "未找到匹配当前系统的文件。"
+    echo "------------------------------------------------"
+    echo "发现的所有文件列表："
+    echo "$URL_LIST" | awk -F/ '{print $NF}'
+    echo "------------------------------------------------"
+    exit 1
+fi
 
-http_get() {
-  url="$1"
-  if have_cmd curl; then
-    curl -fsSL "$url"
-    return 0
-  fi
-  if have_cmd wget; then
-    wget -qO- "$url"
-    return 0
-  fi
-  die "Please install curl or wget first"
-}
+# 拼接完整 URL
+DOWNLOAD_URL="https://github.com$MATCH_PATH"
+FILENAME=$(basename "$DOWNLOAD_URL")
 
-http_download() {
-  url="$1"
-  out="$2"
-  if have_cmd curl; then
-    curl -fsSL "$url" -o "$out"
-    return 0
-  fi
-  if have_cmd wget; then
-    wget -qO "$out" "$url"
-    return 0
-  fi
-  die "Please install curl or wget first"
-}
+log_info "找到文件: $FILENAME"
 
-get_release_json() {
-  # If VERSION is empty, use latest; otherwise use tags/<VERSION>
-  if [ -z "$VERSION" ]; then
-    http_get "https://api.github.com/repos/${REPO}/releases/latest"
-  else
-    http_get "https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
-  fi
-}
+# 5. 下载并安装
+TMP_DIR=$(mktemp -d)
+trap "rm -rf $TMP_DIR" EXIT
 
-detect_target() {
-  os="$(uname -s)"
-  arch="$(uname -m)"
+cd "$TMP_DIR"
+log_info "开始下载..."
+# 增加重试机制
+curl -L --retry 3 -o "$FILENAME" "$DOWNLOAD_URL"
 
-  case "$os" in
-    Darwin) os="apple-darwin" ;;
-    Linux) os="linux" ;;
-    *) die "Unsupported OS: $os" ;;
-  esac
+log_info "解压中..."
+if [[ "$FILENAME" == *.tar.gz ]] || [[ "$FILENAME" == *.tgz ]]; then
+    tar -xzf "$FILENAME"
+elif [[ "$FILENAME" == *.zip ]]; then
+    unzip -q "$FILENAME"
+else
+    chmod +x "$FILENAME"
+    mv "$FILENAME" "$BIN_NAME" 2>/dev/null || true
+fi
 
-  case "$arch" in
-    x86_64|amd64) arch="x86_64" ;;
-    arm64|aarch64) arch="aarch64" ;;
-    *) die "Unsupported architecture: $arch" ;;
-  esac
+# 寻找二进制文件
+if [ ! -f "$BIN_NAME" ]; then
+    # 排除 html, txt, md, hidden files, 自身压缩包
+    FOUND_BIN=$(find . -type f -not -name "*.*" -not -name "LICENSE" -not -name "README" | head -n 1)
+    if [ -n "$FOUND_BIN" ]; then
+        mv "$FOUND_BIN" "$BIN_NAME"
+    fi
+fi
 
-  echo "${arch}-${os}"
-}
+if [ ! -f "$BIN_NAME" ]; then
+    # 再次尝试模糊匹配
+    FOUND_BIN=$(find . -type f -name "*$BIN_NAME*" -not -name "*.gz" -not -name "*.zip" | head -n 1)
+    if [ -n "$FOUND_BIN" ]; then
+        mv "$FOUND_BIN" "$BIN_NAME"
+    fi
+fi
 
-verify_sha256() {
-  file="$1"
-  sumfile="$2"
+if [ ! -f "$BIN_NAME" ]; then
+    log_error "解压后未找到二进制文件。"
+    ls -R
+    exit 1
+fi
 
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -c "$sumfile" >/dev/null 2>&1 || die "SHA256 verification failed: $file"
-    return 0
-  fi
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 -c "$sumfile" >/dev/null 2>&1 || die "SHA256 verification failed: $file"
-    return 0
-  fi
+log_info "安装到 $INSTALL_DIR..."
+if [ -w "$INSTALL_DIR" ]; then
+    mv "$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+else
+    sudo mv "$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+fi
 
-  die "Missing sha256sum/shasum; cannot verify downloaded file"
-}
+sudo chmod +x "$INSTALL_DIR/$BIN_NAME"
 
-extract_download_url() {
-  # From all browser_download_url entries, match arch + os and prefer .tar.gz
-  # Output: url
-  json="$1"
-  arch_key="$2"
-  os_key="$3"
-
-  # Avoid jq: extract all download URLs first, then filter.
-  # shellcheck disable=SC2001
-  echo "$json" \
-    | grep '"browser_download_url"' \
-    | sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    | grep "$arch_key" \
-    | grep "$os_key" \
-    | grep '\.tar\.gz$' \
-    | head -n 1
-}
-
-basename_url() {
-  # POSIX-ish basename (avoid relying on basename in some environments)
-  echo "$1" | awk -F/ '{print $NF}'
-}
-
-main() {
-  need_cmd tar
-
-  target="$(detect_target)"
-  arch_key="${target%%-*}"
-  os_key="${target#*-}"
-
-  info "Fetching release: ${REPO} ${VERSION:-latest}"
-  release_json="$(get_release_json)"
-  if echo "$release_json" | grep -q "Not Found"; then
-    die "Failed to fetch release info (repo/tag may not exist, or network is restricted): ${REPO} ${VERSION:-latest}"
-  fi
-
-  url="$(extract_download_url "$release_json" "$arch_key" "$os_key")"
-  [ -n "$url" ] || die "No matching asset found for current platform (${arch_key}-${os_key})"
-  archive="$(basename_url "$url")"
-  sum_url="${url}.sha256"
-
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-  cd "$tmp"
-
-  info "Downloading: ${url}"
-  http_download "$url" "$archive"
-
-  # SHA256: best-effort (skip verification if the release doesn't provide a .sha256)
-  if http_download "$sum_url" "${archive}.sha256" 2>/dev/null; then
-    verify_sha256 "$archive" "${archive}.sha256"
-  else
-    warn "Checksum file not found: ${sum_url}; skipping SHA256 verification"
-  fi
-
-  tar -xzf "$archive"
-
-  # Compatibility: the binary may be inside a subdirectory after extraction
-  bin_path=""
-  if [ -f "./fgm" ]; then
-    bin_path="./fgm"
-  else
-    bin_path="$(find . -type f -name fgm | head -n 1 || true)"
-  fi
-  [ -n "$bin_path" ] || die "fgm binary not found after extraction"
-
-  mkdir -p "$BIN_DIR"
-  if command -v install >/dev/null 2>&1; then
-    install -m 0755 "$bin_path" "${BIN_DIR}/fgm"
-  else
-    cp "$bin_path" "${BIN_DIR}/fgm"
-    chmod 0755 "${BIN_DIR}/fgm"
-  fi
-
-  info "Installed: ${BIN_DIR}/fgm"
-  if ! echo ":${PATH}:" | grep -q ":${BIN_DIR}:"; then
-    warn "Tip: add the following to your shell config to ensure PATH is updated:"
-    printf '%s\n' "  export PATH=\"${BIN_DIR}:\$PATH\""
-  fi
-  info "Try: fgm --help"
-}
-
-main "$@"
+log_info "安装成功！"
+"$BIN_NAME" --version || echo "完成"
