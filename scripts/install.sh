@@ -149,7 +149,6 @@ setup_shell() {
       echo 'fgm_PATH="'"$INSTALL_DIR"'"'
       echo 'if [ -d "$fgm_PATH" ]; then'
       echo '  export PATH="$fgm_PATH:$PATH"'
-      echo '  eval "`fgm env`"'
       echo 'fi'
     } | tee -a "$CONF_FILE"
 
@@ -163,7 +162,6 @@ setup_shell() {
       echo 'set fgm_PATH "'"$INSTALL_DIR"'"'
       echo 'if [ -d "$fgm_PATH" ]'
       echo '  set PATH "$fgm_PATH" $PATH'
-      echo '  fgm env | source'
       echo 'end'
     } | tee -a "$CONF_FILE"
 
@@ -181,7 +179,6 @@ setup_shell() {
       echo 'fgm_PATH="'"$INSTALL_DIR"'"'
       echo 'if [ -d "$fgm_PATH" ]; then'
       echo '  export PATH="$fgm_PATH:$PATH"'
-      echo '  eval "`fgm env`"'
       echo 'fi'
     } | tee -a "$CONF_FILE"
 

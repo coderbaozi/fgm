@@ -13,16 +13,7 @@
 - Cache: `cache dir|size|clean`
 - Diagnose: `doctor`
 
-## Install & build
-
-This project is currently used from source:
-
-```bash
-cargo build --release
-./target/release/fgm --help
-```
-
-## Install via Release
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/coderbaozi/fgm/main/scripts/install.sh | sh
