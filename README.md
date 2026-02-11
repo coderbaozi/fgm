@@ -13,14 +13,14 @@
 - Cache: `cache dir|size|clean`
 - Diagnose: `doctor`
 
-## Install & build
-
-This project is currently used from source:
+## Install
 
 ```bash
-cargo build --release
-./target/release/fgm --help
+curl -fsSL https://raw.githubusercontent.com/coderbaozi/fgm/main/scripts/install.sh | sh
 ```
+
+Optional environment variables:
+- `FGM_BIN_DIR`: default `~/.local/bin`
 
 ## Quick start
 
